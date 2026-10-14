@@ -1,0 +1,56 @@
+package {
+    default_applicable_licenses: ["external_libqrencode_license"],
+}
+
+license {
+    name: "external_libqrencode_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["SPDX-license-identifier-LGPL-2.1"],
+    license_text: ["COPYING"],
+}
+
+cc_defaults {
+    name: "libqrencode_defaults",
+    bootstrap: true,
+    vendor_available: true,
+    cflags: [
+        "-DMAJOR_VERSION=4",
+        "-DMINOR_VERSION=1",
+        "-DMICRO_VERSION=1",
+        "-DVERSION=\"4.1.1\"",
+        "-Wno-unused-parameter",
+    ],
+}
+
+cc_library {
+    name: "libqrencode",
+    defaults: ["libqrencode_defaults"],
+    srcs: [
+        "bitstream.c",
+        "mask.c",
+        "mmask.c",
+        "mqrspec.c",
+        "qrencode.c",
+        "qrinput.c",
+        "qrspec.c",
+        "rsecc.c",
+        "split.c",
+    ],
+    export_include_dirs: ["."],
+    cflags: ["-DSTATIC_IN_RELEASE=static"],
+}
+
+// PNG output can be disabled with SOONG_CONFIG_libqrencode_png := false
+cc_binary {
+    name: "qrencode",
+    defaults: ["libqrencode_defaults"],
+    srcs: ["qrenc.c"],
+    shared_libs: ["libqrencode"] + select(soong_config_variable("libqrencode", "png"), {
+        false: [],
+        default: ["libpng"],
+    }),
+    cflags: select(soong_config_variable("libqrencode", "png"), {
+        false: [],
+        default: ["-DHAVE_PNG=1"],
+    }),
+}
