@@ -47,6 +47,7 @@ static int svg_path = 0;
 static int micro = 0;
 static int inline_svg = 0;
 static int strict_versioning = 0;
+static int side_by_side = 0;
 static QRecLevel level = QR_ECLEVEL_L;
 static QRencodeMode hint = QR_MODE_8;
 static unsigned char fg_color[4] = {0, 0, 0, 255};
@@ -93,6 +94,7 @@ static const struct option options[] = {
 	{"svg-path"      , no_argument      , &svg_path, 1},
 	{"inline"        , no_argument      , &inline_svg, 1},
 	{"strict-version", no_argument      , &strict_versioning, 1},
+	{"side-by-side"  , no_argument      , &side_by_side, 1},
 	{"foreground"    , required_argument, NULL, 'f'},
 	{"background"    , required_argument, NULL, 'b'},
 	{"version"       , no_argument      , NULL, 'V'},
@@ -159,6 +161,12 @@ static void usage(int help, int longopt, int status)
 "               disable automatic version number adjustment. If the input data is\n"
 "               too large for the specified version, the program exits with the\n"
 "               code of 1.\n\n"
+"      --side-by-side\n"
+"               if the input data is too large for a single symbol, split it into\n"
+"               structured symbols and draw them in a row, one on the right side\n"
+"               of another, in a single image. If '-v' is not given, version 40 is\n"
+"               used for the split. Not available for Micro QR Code. The image is\n"
+"               square, so the rows below the symbols are left blank.\n\n"
 "  -V, --version\n"
 "               display the version number and copyrights of the qrencode.\n\n"
 "      --verbose\n"
@@ -1008,47 +1016,8 @@ static int writeASCII(const QRcode *qrcode, const char *outfile, int invert)
 	return 0;
 }
 
-static QRcode *encode(const unsigned char *intext, int length)
+static void writeImage(const QRcode *qrcode, const char *outfile)
 {
-	QRcode *code;
-
-	if(micro) {
-		if(eightbit) {
-			code = QRcode_encodeDataMQR(length, intext, version, level);
-		} else {
-			code = QRcode_encodeStringMQR((char *)intext, version, level, hint, casesensitive);
-		}
-	} else if(eightbit) {
-		code = QRcode_encodeData(length, intext, version, level);
-	} else {
-		code = QRcode_encodeString((char *)intext, version, level, hint, casesensitive);
-	}
-
-	return code;
-}
-
-static void qrencode(const unsigned char *intext, int length, const char *outfile)
-{
-	QRcode *qrcode;
-
-	qrcode = encode(intext, length);
-	if(qrcode == NULL) {
-		if(errno == ERANGE) {
-			fprintf(stderr, "Failed to encode the input data: Input data too large\n");
-		} else {
-			perror("Failed to encode the input data");
-		}
-		exit(EXIT_FAILURE);
-	}
-	if(strict_versioning && version > 0 && qrcode->version != version) {
-		fprintf(stderr, "Failed to encode the input data: Input data too large\n");
-		exit(EXIT_FAILURE);
-	}
-
-	if(verbose) {
-		fprintf(stderr, "File: %s, Version: %d\n", (outfile!=NULL)?outfile:"(stdout)", qrcode->version);
-	}
-
 	switch(image_type) {
 		case PNG_TYPE:
 		case PNG32_TYPE:
@@ -1092,6 +1061,50 @@ static void qrencode(const unsigned char *intext, int length, const char *outfil
 			fprintf(stderr, "Unknown image type.\n");
 			exit(EXIT_FAILURE);
 	}
+}
+
+static QRcode *encode(const unsigned char *intext, int length)
+{
+	QRcode *code;
+
+	if(micro) {
+		if(eightbit) {
+			code = QRcode_encodeDataMQR(length, intext, version, level);
+		} else {
+			code = QRcode_encodeStringMQR((char *)intext, version, level, hint, casesensitive);
+		}
+	} else if(eightbit) {
+		code = QRcode_encodeData(length, intext, version, level);
+	} else {
+		code = QRcode_encodeString((char *)intext, version, level, hint, casesensitive);
+	}
+
+	return code;
+}
+
+static void qrencode(const unsigned char *intext, int length, const char *outfile)
+{
+	QRcode *qrcode;
+
+	qrcode = encode(intext, length);
+	if(qrcode == NULL) {
+		if(errno == ERANGE) {
+			fprintf(stderr, "Failed to encode the input data: Input data too large\n");
+		} else {
+			perror("Failed to encode the input data");
+		}
+		exit(EXIT_FAILURE);
+	}
+	if(strict_versioning && version > 0 && qrcode->version != version) {
+		fprintf(stderr, "Failed to encode the input data: Input data too large\n");
+		exit(EXIT_FAILURE);
+	}
+
+	if(verbose) {
+		fprintf(stderr, "File: %s, Version: %d\n", (outfile!=NULL)?outfile:"(stdout)", qrcode->version);
+	}
+
+	writeImage(qrcode, outfile);
 
 	QRcode_free(qrcode);
 }
@@ -1240,6 +1253,101 @@ static void qrencodeStructured(const unsigned char *intext, int length, const ch
 		free(suffix);
 	}
 
+	QRcode_List_free(qrlist);
+}
+
+static QRcode *mergeSideBySide(const QRcode_List *list)
+{
+	const QRcode_List *p;
+	QRcode *merged;
+	int count = 0, w = 0, gap, width, top, x, y, n = 0;
+
+	for(p = list; p != NULL; p = p->next) {
+		if(p->code == NULL) {
+			return NULL;
+		}
+		if(p->code->width > w) {
+			w = p->code->width;
+		}
+		count++;
+	}
+	if(count == 0) {
+		return NULL;
+	}
+
+	/* Each symbol keeps its own quiet zone on both sides. */
+	gap = margin * 2;
+	width = w * count + gap * (count - 1);
+	top = (width - w) / 2;
+
+	merged = (QRcode *)malloc(sizeof(QRcode));
+	if(merged == NULL) {
+		return NULL;
+	}
+	merged->data = (unsigned char *)calloc((size_t)width * width, 1);
+	if(merged->data == NULL) {
+		free(merged);
+		return NULL;
+	}
+	merged->version = list->code->version;
+	merged->width = width;
+
+	for(p = list; p != NULL; p = p->next, n++) {
+		int left = n * (w + gap);
+		for(y = 0; y < p->code->width; y++) {
+			for(x = 0; x < p->code->width; x++) {
+				merged->data[(top + y) * width + left + x] = p->code->data[y * p->code->width + x];
+			}
+		}
+	}
+
+	return merged;
+}
+
+static void qrencodeSideBySide(const unsigned char *intext, int length, const char *outfile)
+{
+	QRcode *qrcode, *merged;
+	QRcode_List *qrlist;
+	int single_version = version;
+
+	qrcode = encode(intext, length);
+	if(qrcode != NULL) {
+		if(version == 0 || qrcode->version == version) {
+			qrencode(intext, length, outfile);
+			QRcode_free(qrcode);
+			return;
+		}
+		QRcode_free(qrcode);
+	} else if(errno != ERANGE) {
+		perror("Failed to encode the input data");
+		exit(EXIT_FAILURE);
+	}
+
+	if(single_version == 0) {
+		version = QRSPEC_VERSION_MAX;
+	}
+	qrlist = encodeStructured(intext, length);
+	if(qrlist == NULL) {
+		if(errno == ERANGE) {
+			fprintf(stderr, "Failed to encode the input data: Input data too large\n");
+		} else {
+			perror("Failed to encode the input data");
+		}
+		exit(EXIT_FAILURE);
+	}
+	merged = mergeSideBySide(qrlist);
+	if(merged == NULL) {
+		fprintf(stderr, "Failed to encode the input data.\n");
+		exit(EXIT_FAILURE);
+	}
+
+	if(verbose) {
+		fprintf(stderr, "File: %s, Version: %d, Symbols side by side\n", (outfile!=NULL)?outfile:"(stdout)", version);
+	}
+
+	writeImage(merged, outfile);
+
+	QRcode_free(merged);
 	QRcode_List_free(qrlist);
 }
 
@@ -1439,7 +1547,17 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if(structured) {
+	if(side_by_side) {
+		if(micro) {
+			fprintf(stderr, "Micro QR Code does not support side-by-side symbols.\n");
+			exit(EXIT_FAILURE);
+		}
+		if(structured) {
+			fprintf(stderr, "--side-by-side and -S cannot be used together.\n");
+			exit(EXIT_FAILURE);
+		}
+		qrencodeSideBySide(intext, length, outfile);
+	} else if(structured) {
 		if(version == 0) {
 			fprintf(stderr, "Version number must be specified to encode structured symbols.\n");
 			exit(EXIT_FAILURE);
