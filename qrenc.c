@@ -35,6 +35,13 @@
 
 #define INCHES_PER_METER (100.0/2.54)
 
+/* A module matrix to be drawn. Unlike QRcode, it may not be square. */
+typedef struct {
+	int width;
+	int height;
+	unsigned char *data;
+} QRimage;
+
 static int casesensitive = 1;
 static int eightbit = 0;
 static int version = 0;
@@ -165,8 +172,7 @@ static void usage(int help, int longopt, int status)
 "               if the input data is too large for a single symbol, split it into\n"
 "               structured symbols and draw them in a row, one on the right side\n"
 "               of another, in a single image. If '-v' is not given, version 40 is\n"
-"               used for the split. Not available for Micro QR Code. The image is\n"
-"               square, so the rows below the symbols are left blank.\n\n"
+"               used for the split. Not available for Micro QR Code.\n\n"
 "  -V, --version\n"
 "               display the version number and copyrights of the qrencode.\n\n"
 "      --verbose\n"
@@ -297,7 +303,7 @@ static void fillRow(unsigned char *row, int num, const unsigned char color[])
 }
 #endif
 
-static int writePNG(const QRcode *qrcode, const char *outfile, enum imageType type)
+static int writePNG(const QRimage *qrcode, const char *outfile, enum imageType type)
 {
 #if HAVE_PNG
 	static FILE *fp; // avoid clobbering by setjmp.
@@ -307,9 +313,10 @@ static int writePNG(const QRcode *qrcode, const char *outfile, enum imageType ty
 	png_byte alpha_values[2];
 	unsigned char *row, *p, *q;
 	int x, y, xx, yy, bit;
-	int realwidth;
+	int realwidth, realheight;
 
 	realwidth = (qrcode->width + margin * 2) * size;
+	realheight = (qrcode->height + margin * 2) * size;
 	if(type == PNG_TYPE) {
 		row = (unsigned char *)malloc((size_t)((realwidth + 7) / 8));
 	} else if(type == PNG32_TYPE) {
@@ -373,7 +380,7 @@ static int writePNG(const QRcode *qrcode, const char *outfile, enum imageType ty
 	png_init_io(png_ptr, fp);
 	if(type == PNG_TYPE) {
 		png_set_IHDR(png_ptr, info_ptr,
-				(unsigned int)realwidth, (unsigned int)realwidth,
+				(unsigned int)realwidth, (unsigned int)realheight,
 				1,
 				PNG_COLOR_TYPE_PALETTE,
 				PNG_INTERLACE_NONE,
@@ -381,7 +388,7 @@ static int writePNG(const QRcode *qrcode, const char *outfile, enum imageType ty
 				PNG_FILTER_TYPE_DEFAULT);
 	} else {
 		png_set_IHDR(png_ptr, info_ptr,
-				(unsigned int)realwidth, (unsigned int)realwidth,
+				(unsigned int)realwidth, (unsigned int)realheight,
 				8,
 				PNG_COLOR_TYPE_RGB_ALPHA,
 				PNG_INTERLACE_NONE,
@@ -403,7 +410,7 @@ static int writePNG(const QRcode *qrcode, const char *outfile, enum imageType ty
 
 		/* data */
 		p = qrcode->data;
-		for(y = 0; y < qrcode->width; y++) {
+		for(y = 0; y < qrcode->height; y++) {
 			memset(row, 0xff, (size_t)((realwidth + 7) / 8));
 			q = row;
 			q += margin * size / 8;
@@ -437,7 +444,7 @@ static int writePNG(const QRcode *qrcode, const char *outfile, enum imageType ty
 
 		/* data */
 		p = qrcode->data;
-		for(y = 0; y < qrcode->width; y++) {
+		for(y = 0; y < qrcode->height; y++) {
 			fillRow(row, realwidth, bg_color);
 			for(x = 0; x < qrcode->width; x++) {
 				for(xx = 0; xx < size; xx++) {
@@ -472,21 +479,22 @@ static int writePNG(const QRcode *qrcode, const char *outfile, enum imageType ty
 #endif
 }
 
-static int writeEPS(const QRcode *qrcode, const char *outfile)
+static int writeEPS(const QRimage *qrcode, const char *outfile)
 {
 	FILE *fp;
 	unsigned char *row, *p;
 	int x, y, yy;
-	int realwidth;
+	int realwidth, realheight;
 
 	fp = openFile(outfile);
 
 	realwidth = (qrcode->width + margin * 2) * size;
+	realheight = (qrcode->height + margin * 2) * size;
 	/* EPS file header */
 	fprintf(fp, "%%!PS-Adobe-2.0 EPSF-1.2\n"
 				"%%%%BoundingBox: 0 0 %d %d\n"
 				"%%%%Pages: 1 1\n"
-				"%%%%EndComments\n", realwidth, realwidth);
+				"%%%%EndComments\n", realwidth, realheight);
 	/* draw point */
 	fprintf(fp, "/p { "
 				"moveto "
@@ -501,7 +509,7 @@ static int writeEPS(const QRcode *qrcode, const char *outfile)
 			(float)bg_color[0] / 255,
 			(float)bg_color[1] / 255,
 			(float)bg_color[2] / 255);
-	fprintf(fp, "%d %d scale\n", realwidth, realwidth);
+	fprintf(fp, "%d %d scale\n", realwidth, realheight);
 	fprintf(fp, "0 0 p\ngrestore\n");
 	fprintf(fp, "%f %f %f setrgbcolor\n",
 			(float)fg_color[0] / 255,
@@ -511,9 +519,9 @@ static int writeEPS(const QRcode *qrcode, const char *outfile)
 
 	/* data */
 	p = qrcode->data;
-	for(y = 0; y < qrcode->width; y++) {
+	for(y = 0; y < qrcode->height; y++) {
 		row = (p+(y*qrcode->width));
-		yy = (margin + qrcode->width - y - 1);
+		yy = (margin + qrcode->height - y - 1);
 
 		for(x = 0; x < qrcode->width; x++) {
 			if(*(row+x)&0x1) {
@@ -545,12 +553,12 @@ static void writeSVG_drawModules(FILE *fp, int x, int y, int width, const char* 
 	}
 }
 
-static int writeSVG(const QRcode *qrcode, const char *outfile)
+static int writeSVG(const QRimage *qrcode, const char *outfile)
 {
 	FILE *fp;
 	unsigned char *row, *p;
 	int x, y, x0, pen;
-	int symwidth, realwidth;
+	int symwidth, symheight, realwidth, realheight;
 	float scale;
 	char fg[7], bg[7];
 	float fg_opacity;
@@ -561,7 +569,9 @@ static int writeSVG(const QRcode *qrcode, const char *outfile)
 	scale = dpi * INCHES_PER_METER / 100.0;
 
 	symwidth = qrcode->width + margin * 2;
+	symheight = qrcode->height + margin * 2;
 	realwidth = symwidth * size;
+	realheight = symheight * size;
 
 	snprintf(fg, 7, "%02x%02x%02x", fg_color[0], fg_color[1],  fg_color[2]);
 	snprintf(bg, 7, "%02x%02x%02x", bg_color[0], bg_color[1],  bg_color[2]);
@@ -589,7 +599,7 @@ static int writeSVG(const QRcode *qrcode, const char *outfile)
 			"<svg width=\"%.2fcm\" height=\"%.2fcm\" viewBox=\"0 0 %d %d\""\
 			" preserveAspectRatio=\"none\" version=\"1.1\""\
 			" xmlns=\"http://www.w3.org/2000/svg\">\n",
-			realwidth / scale, realwidth / scale, symwidth, symwidth
+			realwidth / scale, realheight / scale, symwidth, symheight
 		   );
 
 	/* Make named group */
@@ -597,9 +607,9 @@ static int writeSVG(const QRcode *qrcode, const char *outfile)
 
 	/* Make solid background */
 	if(bg_color[3] != 255) {
-		fprintf(fp, "\t\t<rect x=\"0\" y=\"0\" width=\"%d\" height=\"%d\" fill=\"#%s\" fill-opacity=\"%f\"/>\n", symwidth, symwidth, bg, bg_opacity);
+		fprintf(fp, "\t\t<rect x=\"0\" y=\"0\" width=\"%d\" height=\"%d\" fill=\"#%s\" fill-opacity=\"%f\"/>\n", symwidth, symheight, bg, bg_opacity);
 	} else {
-		fprintf(fp, "\t\t<rect x=\"0\" y=\"0\" width=\"%d\" height=\"%d\" fill=\"#%s\"/>\n", symwidth, symwidth, bg);
+		fprintf(fp, "\t\t<rect x=\"0\" y=\"0\" width=\"%d\" height=\"%d\" fill=\"#%s\"/>\n", symwidth, symheight, bg);
 	}
 
 	if(svg_path) {
@@ -615,7 +625,7 @@ static int writeSVG(const QRcode *qrcode, const char *outfile)
 
 	/* Write data */
 	p = qrcode->data;
-	for(y = 0; y < qrcode->width; y++) {
+	for(y = 0; y < qrcode->height; y++) {
 		row = (p+(y*qrcode->width));
 
 		if( !rle ) {
@@ -661,7 +671,7 @@ static int writeSVG(const QRcode *qrcode, const char *outfile)
 	return 0;
 }
 
-static int writeXPM(const QRcode *qrcode, const char *outfile)
+static int writeXPM(const QRimage *qrcode, const char *outfile)
 {
 	FILE *fp;
 	int x, xx, y, yy, realwidth, realmargin;
@@ -686,7 +696,7 @@ static int writeXPM(const QRcode *qrcode, const char *outfile)
 	fputs("/* XPM */\n", fp);
 	fputs("static const char *const qrcode_xpm[] = {\n", fp);
 	fputs("/* width height ncolors chars_per_pixel */\n", fp);
-	fprintf(fp, "\"%d %d 2 1\",\n", realwidth, realwidth);
+	fprintf(fp, "\"%d %d 2 1\",\n", realwidth, (qrcode->height + margin * 2) * size);
 
 	fputs("/* colors */\n", fp);
 	fprintf(fp, "\"F c #%s\",\n", fg);
@@ -701,7 +711,7 @@ static int writeXPM(const QRcode *qrcode, const char *outfile)
 	}
 
 	p = qrcode->data;
-	for (y = 0; y < qrcode->width; y++) {
+	for (y = 0; y < qrcode->height; y++) {
 		for (yy = 0; yy < size; yy++) {
 			fputs("\"", fp);
 
@@ -754,7 +764,7 @@ static void writeANSI_margin(FILE* fp, int realwidth,
 	}
 }
 
-static int writeANSI(const QRcode *qrcode, const char *outfile)
+static int writeANSI(const QRimage *qrcode, const char *outfile)
 {
 	FILE *fp;
 	unsigned char *row, *p;
@@ -796,7 +806,7 @@ static int writeANSI(const QRcode *qrcode, const char *outfile)
 
 	/* data */
 	p = qrcode->data;
-	for(y = 0; y < qrcode->width; y++) {
+	for(y = 0; y < qrcode->height; y++) {
 		row = (p+(y*qrcode->width));
 
 		memset(buffer, 0, (size_t)buffer_s);
@@ -852,7 +862,7 @@ static void writeUTF8_margin(FILE* fp, int realwidth, const char* white,
 	}
 }
 
-static int writeUTF8(const QRcode *qrcode, const char *outfile, int use_ansi, int invert)
+static int writeUTF8(const QRimage *qrcode, const char *outfile, int use_ansi, int invert)
 {
 	FILE *fp;
 	int x, y;
@@ -897,7 +907,7 @@ static int writeUTF8(const QRcode *qrcode, const char *outfile, int use_ansi, in
 	writeUTF8_margin(fp, realwidth, white, reset, full);
 
 	/* data */
-	for(y = 0; y < qrcode->width; y += 2) {
+	for(y = 0; y < qrcode->height; y += 2) {
 		unsigned char *row1, *row2;
 		row1 = qrcode->data + y*qrcode->width;
 		row2 = row1 + qrcode->width;
@@ -910,12 +920,12 @@ static int writeUTF8(const QRcode *qrcode, const char *outfile, int use_ansi, in
 
 		for (x = 0; x < qrcode->width; x++) {
 			if(row1[x] & 1) {
-				if(y < qrcode->width - 1 && row2[x] & 1) {
+				if(y < qrcode->height - 1 && row2[x] & 1) {
 					fputs(empty, fp);
 				} else {
 					fputs(lowhalf, fp);
 				}
-			} else if(y < qrcode->width - 1 && row2[x] & 1) {
+			} else if(y < qrcode->height - 1 && row2[x] & 1) {
 				fputs(uphalf, fp);
 			} else {
 				fputs(full, fp);
@@ -951,7 +961,7 @@ static void writeASCII_margin(FILE* fp, int realwidth, char* buffer, int invert)
 	}
 }
 
-static int writeASCII(const QRcode *qrcode, const char *outfile, int invert)
+static int writeASCII(const QRimage *qrcode, const char *outfile, int invert)
 {
 	FILE *fp;
 	unsigned char *row;
@@ -983,7 +993,7 @@ static int writeASCII(const QRcode *qrcode, const char *outfile, int invert)
 	writeASCII_margin(fp, realwidth, buffer, invert);
 
 	/* data */
-	for(y = 0; y < qrcode->width; y++) {
+	for(y = 0; y < qrcode->height; y++) {
 		row = qrcode->data+(y*qrcode->width);
 		p = buffer;
 
@@ -1016,7 +1026,7 @@ static int writeASCII(const QRcode *qrcode, const char *outfile, int invert)
 	return 0;
 }
 
-static void writeImage(const QRcode *qrcode, const char *outfile)
+static void writeImage(const QRimage *qrcode, const char *outfile)
 {
 	switch(image_type) {
 		case PNG_TYPE:
@@ -1085,6 +1095,7 @@ static QRcode *encode(const unsigned char *intext, int length)
 static void qrencode(const unsigned char *intext, int length, const char *outfile)
 {
 	QRcode *qrcode;
+	QRimage img;
 
 	qrcode = encode(intext, length);
 	if(qrcode == NULL) {
@@ -1104,7 +1115,9 @@ static void qrencode(const unsigned char *intext, int length, const char *outfil
 		fprintf(stderr, "File: %s, Version: %d\n", (outfile!=NULL)?outfile:"(stdout)", qrcode->version);
 	}
 
-	writeImage(qrcode, outfile);
+	img.width = img.height = qrcode->width;
+	img.data = qrcode->data;
+	writeImage(&img, outfile);
 
 	QRcode_free(qrcode);
 }
@@ -1125,6 +1138,7 @@ static QRcode_List *encodeStructured(const unsigned char *intext, int length)
 static void qrencodeStructured(const unsigned char *intext, int length, const char *outfile)
 {
 	QRcode_List *qrlist, *p;
+	QRimage img;
 	char filename[FILENAME_MAX];
 	char *base, *q, *suffix = NULL;
 	const char *type_suffix;
@@ -1191,6 +1205,8 @@ static void qrencodeStructured(const unsigned char *intext, int length, const ch
 			fprintf(stderr, "Failed to encode the input data.\n");
 			exit(EXIT_FAILURE);
 		}
+		img.width = img.height = p->code->width;
+		img.data = p->code->data;
 		if(suffix) {
 			snprintf(filename, FILENAME_MAX, "%s-%02d%s", base, i, suffix);
 		} else {
@@ -1204,41 +1220,41 @@ static void qrencodeStructured(const unsigned char *intext, int length, const ch
 		switch(image_type) {
 			case PNG_TYPE:
 			case PNG32_TYPE:
-				writePNG(p->code, filename, image_type);
+				writePNG(&img, filename, image_type);
 				break;
 			case EPS_TYPE:
-				writeEPS(p->code, filename);
+				writeEPS(&img, filename);
 				break;
 			case SVG_TYPE:
-				writeSVG(p->code, filename);
+				writeSVG(&img, filename);
 				break;
 			case XPM_TYPE:
-				writeXPM(p->code, filename);
+				writeXPM(&img, filename);
 				break;
 			case ANSI_TYPE:
 			case ANSI256_TYPE:
-				writeANSI(p->code, filename);
+				writeANSI(&img, filename);
 				break;
 			case ASCIIi_TYPE:
-				writeASCII(p->code, filename, 1);
+				writeASCII(&img, filename, 1);
 				break;
 			case ASCII_TYPE:
-				writeASCII(p->code, filename, 0);
+				writeASCII(&img, filename, 0);
 				break;
 			case UTF8_TYPE:
-				writeUTF8(p->code, filename, 0, 0);
+				writeUTF8(&img, filename, 0, 0);
 				break;
 			case ANSIUTF8_TYPE:
-				writeUTF8(p->code, filename, 0, 0);
+				writeUTF8(&img, filename, 0, 0);
 				break;
 			case ANSI256UTF8_TYPE:
-				writeUTF8(p->code, filename, 0, 0);
+				writeUTF8(&img, filename, 0, 0);
 				break;
 			case UTF8i_TYPE:
-				writeUTF8(p->code, filename, 0, 1);
+				writeUTF8(&img, filename, 0, 1);
 				break;
 			case ANSIUTF8i_TYPE:
-				writeUTF8(p->code, filename, 0, 1);
+				writeUTF8(&img, filename, 0, 1);
 				break;
 
 			default:
@@ -1256,15 +1272,14 @@ static void qrencodeStructured(const unsigned char *intext, int length, const ch
 	QRcode_List_free(qrlist);
 }
 
-static QRcode *mergeSideBySide(const QRcode_List *list)
+static int mergeSideBySide(const QRcode_List *list, QRimage *merged)
 {
 	const QRcode_List *p;
-	QRcode *merged;
-	int count = 0, w = 0, gap, width, top, x, y, n = 0;
+	int count = 0, w = 0, gap, width, x, y, n = 0;
 
 	for(p = list; p != NULL; p = p->next) {
 		if(p->code == NULL) {
-			return NULL;
+			return -1;
 		}
 		if(p->code->width > w) {
 			w = p->code->width;
@@ -1272,41 +1287,36 @@ static QRcode *mergeSideBySide(const QRcode_List *list)
 		count++;
 	}
 	if(count == 0) {
-		return NULL;
+		return -1;
 	}
 
 	/* Each symbol keeps its own quiet zone on both sides. */
 	gap = margin * 2;
 	width = w * count + gap * (count - 1);
-	top = (width - w) / 2;
 
-	merged = (QRcode *)malloc(sizeof(QRcode));
-	if(merged == NULL) {
-		return NULL;
-	}
-	merged->data = (unsigned char *)calloc((size_t)width * width, 1);
+	merged->data = (unsigned char *)calloc((size_t)width * w, 1);
 	if(merged->data == NULL) {
-		free(merged);
-		return NULL;
+		return -1;
 	}
-	merged->version = list->code->version;
 	merged->width = width;
+	merged->height = w;
 
 	for(p = list; p != NULL; p = p->next, n++) {
 		int left = n * (w + gap);
 		for(y = 0; y < p->code->width; y++) {
 			for(x = 0; x < p->code->width; x++) {
-				merged->data[(top + y) * width + left + x] = p->code->data[y * p->code->width + x];
+				merged->data[y * width + left + x] = p->code->data[y * p->code->width + x];
 			}
 		}
 	}
 
-	return merged;
+	return 0;
 }
 
 static void qrencodeSideBySide(const unsigned char *intext, int length, const char *outfile)
 {
-	QRcode *qrcode, *merged;
+	QRcode *qrcode;
+	QRimage merged;
 	QRcode_List *qrlist;
 	int single_version = version;
 
@@ -1335,8 +1345,7 @@ static void qrencodeSideBySide(const unsigned char *intext, int length, const ch
 		}
 		exit(EXIT_FAILURE);
 	}
-	merged = mergeSideBySide(qrlist);
-	if(merged == NULL) {
+	if(mergeSideBySide(qrlist, &merged) != 0) {
 		fprintf(stderr, "Failed to encode the input data.\n");
 		exit(EXIT_FAILURE);
 	}
@@ -1345,9 +1354,9 @@ static void qrencodeSideBySide(const unsigned char *intext, int length, const ch
 		fprintf(stderr, "File: %s, Version: %d, Symbols side by side\n", (outfile!=NULL)?outfile:"(stdout)", version);
 	}
 
-	writeImage(merged, outfile);
+	writeImage(&merged, outfile);
 
-	QRcode_free(merged);
+	free(merged.data);
 	QRcode_List_free(qrlist);
 }
 
