@@ -12,6 +12,7 @@ license {
 cc_defaults {
     name: "libqrencode_defaults",
     bootstrap: true,
+    host_supported: true,
     vendor_available: true,
     cflags: [
         "-DMAJOR_VERSION=4",
